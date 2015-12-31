@@ -296,7 +296,7 @@ void Curl_freeset(struct SessionHandle *data)
   data->change.url = NULL;
 }
 
-static CURLcode setstropt(char **charp, char *s)
+static CURLcode setstropt(char **charp, const char *s)
 {
   /* Release the previous storage at `charp' and replace by a dynamic storage
      copy of `s'. Return CURLE_OK or CURLE_OUT_OF_MEMORY. */
@@ -304,12 +304,12 @@ static CURLcode setstropt(char **charp, char *s)
   Curl_safefree(*charp);
 
   if(s) {
-    s = strdup(s);
+    char *str = strdup(s);
 
-    if(!s)
+    if(!str)
       return CURLE_OUT_OF_MEMORY;
 
-    *charp = s;
+    *charp = str;
   }
 
   return CURLE_OK;
@@ -572,31 +572,31 @@ CURLcode Curl_init_userdefined(struct UserDefined *set)
   set->socks5_gssapi_nec = FALSE;
   /* set default GSS-API service name */
   result = setstropt(&set->str[STRING_SOCKS5_GSSAPI_SERVICE],
-                     (char *) CURL_DEFAULT_SOCKS5_GSSAPI_SERVICE);
+                     CURL_DEFAULT_SOCKS5_GSSAPI_SERVICE);
   if(result)
     return result;
 
   /* set default negotiate proxy service name */
   result = setstropt(&set->str[STRING_PROXY_SERVICE_NAME],
-                     (char *) CURL_DEFAULT_PROXY_SERVICE_NAME);
+                     CURL_DEFAULT_PROXY_SERVICE_NAME);
   if(result)
     return result;
 
   /* set default negotiate service name */
   result = setstropt(&set->str[STRING_SERVICE_NAME],
-                     (char *) CURL_DEFAULT_SERVICE_NAME);
+                     CURL_DEFAULT_SERVICE_NAME);
   if(result)
     return result;
 #endif
 
   /* This is our preferred CA cert bundle/path since install time */
 #if defined(CURL_CA_BUNDLE)
-  result = setstropt(&set->str[STRING_SSL_CAFILE], (char *) CURL_CA_BUNDLE);
+  result = setstropt(&set->str[STRING_SSL_CAFILE], CURL_CA_BUNDLE);
   if(result)
     return result;
 #endif
 #if defined(CURL_CA_PATH)
-  result = setstropt(&set->str[STRING_SSL_CAPATH], (char *) CURL_CA_PATH);
+  result = setstropt(&set->str[STRING_SSL_CAPATH], CURL_CA_PATH);
   if(result)
     return result;
 #endif
@@ -936,7 +936,7 @@ CURLcode Curl_setopt(struct SessionHandle *data, CURLoption option,
     argptr = va_arg(param, char *);
     result = setstropt(&data->set.str[STRING_ENCODING],
                        (argptr && !*argptr)?
-                       (char *) ALL_CONTENT_ENCODINGS: argptr);
+                       ALL_CONTENT_ENCODINGS: argptr);
     break;
 
   case CURLOPT_TRANSFER_ENCODING:
@@ -1294,7 +1294,7 @@ CURLcode Curl_setopt(struct SessionHandle *data, CURLoption option,
      */
     arg = va_arg(param, long);
 #ifndef USE_NGHTTP2
-    if(arg == CURL_HTTP_VERSION_2_0)
+    if(arg >= CURL_HTTP_VERSION_2)
       return CURLE_UNSUPPORTED_PROTOCOL;
 #endif
     data->set.httpversion = arg;
@@ -2865,7 +2865,7 @@ static bool IsPipeliningPossible(const struct SessionHandle *handle,
       return TRUE;
 
     if(Curl_pipeline_wanted(handle->multi, CURLPIPE_MULTIPLEX) &&
-       (handle->set.httpversion == CURL_HTTP_VERSION_2_0))
+       (handle->set.httpversion >= CURL_HTTP_VERSION_2))
       /* allows HTTP/2 */
       return TRUE;
   }
@@ -3140,6 +3140,7 @@ ConnectionExists(struct SessionHandle *data,
 {
   struct connectdata *check;
   struct connectdata *chosen = 0;
+  bool foundPendingCandidate = FALSE;
   bool canPipeline = IsPipeliningPossible(data, needle);
 #ifdef USE_NTLM
   bool wantNTLMhttp = ((data->state.authhost.want & CURLAUTH_NTLM) ||
@@ -3239,6 +3240,8 @@ ConnectionExists(struct SessionHandle *data,
 
         if((check->sock[FIRSTSOCKET] == CURL_SOCKET_BAD) ||
            check->bits.close) {
+          if(!check->bits.close)
+            foundPendingCandidate = TRUE;
           /* Don't pick a connection that hasn't connected yet or that is going
              to get closed. */
           infof(data, "Connection #%ld isn't open enough, can't reuse\n",
@@ -3339,6 +3342,7 @@ ConnectionExists(struct SessionHandle *data,
               continue;
             }
             else if(check->ssl[FIRSTSOCKET].state != ssl_connection_complete) {
+              foundPendingCandidate = TRUE;
               DEBUGF(infof(data,
                            "Connection #%ld has not started SSL connect, "
                            "can't reuse\n",
@@ -3445,6 +3449,12 @@ ConnectionExists(struct SessionHandle *data,
   if(chosen) {
     *usethis = chosen;
     return TRUE; /* yes, we found one to use! */
+  }
+
+  if(foundPendingCandidate && data->set.pipewait) {
+    infof(data,
+          "Found pending candidate for reuse and CURLOPT_PIPEWAIT is set");
+    *waitpipe = TRUE;
   }
 
   return FALSE; /* no matching connecting exists */
